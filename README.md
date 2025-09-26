@@ -2,7 +2,7 @@
 
 CLI Tool for automatic transcription of audio and video files with the ability to create text summaries. Uses OpenAI API for media file processing.
 
-[🇷🇺 Русская версия](README_RU.md)
+[🇷🇺 Русская версия](README_RUS.md)
 
 ## System Requirements
 
