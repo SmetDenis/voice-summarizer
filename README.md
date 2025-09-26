@@ -52,7 +52,7 @@ Fill in the following parameters in the `.env` file:
 OPENAI_API_KEY=your-openai-api-key-here
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_WHISPER_MODEL=whisper-1
-OPENAI_SUMMARY_MODEL=gpt-4o-mini
+OPENAI_SUMMARY_MODEL=gpt-4o
 ```
 
 ## Project Structure
@@ -172,7 +172,7 @@ docker-compose run voice-summarizer-dev
 | `--api-key` | OpenAI API key (alternative to OPENAI_API_KEY variable) |
 | `--base-url` | Base URL for OpenAI API (alternative to OPENAI_BASE_URL variable) |
 | `--whisper-model` | Whisper model for transcription (default: whisper-1) |
-| `--summary-model` | Model for summary creation (default: gpt-4o-mini) |
+| `--summary-model` | Model for summary creation (default: gpt-4o) |
 | `--summarize` | Enable text summary creation |
 | `--prompt-file` | Path to summarization prompt file (default: summarization_prompt.md) |
 

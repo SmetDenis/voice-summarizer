@@ -51,7 +51,7 @@ nano .env
 OPENAI_API_KEY=your-openai-api-key-here
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_WHISPER_MODEL=whisper-1
-OPENAI_SUMMARY_MODEL=gpt-4o-mini
+OPENAI_SUMMARY_MODEL=gpt-4o
 ```
 
 ## Структура проекта
@@ -171,7 +171,7 @@ docker-compose run voice-summarizer-dev
 | `--api-key` | API ключ OpenAI (альтернатива переменной OPENAI_API_KEY) |
 | `--base-url` | Базовый URL для API OpenAI (альтернатива переменной OPENAI_BASE_URL) |
 | `--whisper-model` | Модель Whisper для транскрибации (по умолчанию: whisper-1) |
-| `--summary-model` | Модель для создания резюме (по умолчанию: gpt-4o-mini) |
+| `--summary-model` | Модель для создания резюме (по умолчанию: gpt-4o) |
 | `--summarize` | Включить создание текстового резюме |
 | `--prompt-file` | Путь к файлу с промптом для суммаризации (по умолчанию: summarization_prompt.md) |
 
