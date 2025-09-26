@@ -1,0 +1,33 @@
+# Git and IDE files
+.git
+.gitignore
+.idea
+.vscode
+*.swp
+*.swo
+
+# Python cache and virtual environments
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv
+venv/
+
+# Project specific
+.env
+output/
+input/*
+!input/.gitkeep
+
+# Documentation
+README.md
+CLAUDE.md
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

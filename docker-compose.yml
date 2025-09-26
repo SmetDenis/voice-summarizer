@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  voice-summarizer:
+    build: .
+    container_name: voice-summarizer
+    volumes:
+      # Mount input and output directories
+      - ./input:/app/input:ro
+      - ./output:/app/output
+      # Mount environment file
+      - ./.env:/app/.env:ro
+      # Optional: mount custom prompt file
+      - ./summarization_prompt.md:/app/summarization_prompt.md:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    # Override default command to run a specific file
+    # Example: docker-compose run voice-summarizer input/my-audio.mp4 --summarize
+    command: ["--help"]
+
+  # Development service with interactive shell
+  voice-summarizer-dev:
+    build: .
+    container_name: voice-summarizer-dev
+    volumes:
+      - ./:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: ["bash"]
+    tty: true
+    stdin_open: true
