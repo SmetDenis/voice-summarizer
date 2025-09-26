@@ -27,6 +27,8 @@ from openai import OpenAI
 import logging
 from dotenv import load_dotenv
 from datetime import datetime
+import io
+import base64
 
 # Load environment variables from .env file
 load_dotenv()
@@ -60,10 +62,10 @@ class AudioTranscriber:
             return float(result.stdout.strip())
         except subprocess.CalledProcessError as e:
             logger.error(f"Error getting file duration: {e}")
-            raise
+            sys.exit(1)
         except ValueError as e:
             logger.error(f"Error parsing duration: {e}")
-            raise
+            sys.exit(1)
 
     def _validate_path(self, path):
         """Validate that path is safe and doesn't contain path traversal attempts."""
@@ -72,7 +74,8 @@ class AudioTranscriber:
         try:
             resolved_path.relative_to(Path.cwd())
         except ValueError:
-            raise ValueError(f"Unsafe path detected: {path}")
+            logger.error(f"Unsafe path detected: {path}")
+            sys.exit(1)
         return resolved_path
 
     def split_audio(self, input_file, output_dir):
@@ -87,6 +90,30 @@ class AudioTranscriber:
         segments = []
         segment_count = int(duration // self.max_duration) + (1 if duration % self.max_duration > 0 else 1)
 
+        # Check if segments already exist
+        existing_segments = []
+        all_segments_exist = True
+
+        for i in range(segment_count):
+            output_filename = f"{input_path.stem}_segment_{i+1:03d}.mp3"
+            output_path = output_dir / output_filename
+
+            if output_path.exists():
+                existing_segments.append(output_path)
+                file_size_mb = output_path.stat().st_size / (1024 * 1024)
+                logger.info(f"Found existing segment: {output_filename} ({file_size_mb:.2f} MB)")
+            else:
+                all_segments_exist = False
+                break
+
+        # If all segments already exist, return them without processing
+        if all_segments_exist and len(existing_segments) == segment_count:
+            logger.info(f"✓ SKIPPING SEGMENTATION: All {segment_count} audio segments already exist in {output_dir}")
+            logger.info(f"✓ Found existing segments: {input_path.stem}_segment_001.mp3 to {input_path.stem}_segment_{segment_count:03d}.mp3")
+            return existing_segments
+
+        # Create missing segments
+        logger.info(f"Creating audio segments (some segments may be missing)")
         for i in range(segment_count):
             start_time = i * self.max_duration
             segment_duration = min(self.max_duration, duration - start_time)
@@ -96,6 +123,13 @@ class AudioTranscriber:
 
             output_filename = f"{input_path.stem}_segment_{i+1:03d}.mp3"
             output_path = output_dir / output_filename
+
+            # Skip if segment already exists
+            if output_path.exists():
+                file_size_mb = output_path.stat().st_size / (1024 * 1024)
+                logger.info(f"Segment {i+1}/{segment_count} already exists: {output_filename} ({file_size_mb:.2f} MB)")
+                segments.append(output_path)
+                continue
 
             cmd = [
                 'ffmpeg', '-i', str(input_file),
@@ -110,25 +144,39 @@ class AudioTranscriber:
             try:
                 subprocess.run(cmd, capture_output=True, check=True)
                 segments.append(output_path)
+                # Show file size after creation
+                file_size_mb = output_path.stat().st_size / (1024 * 1024)
+                logger.info(f"✓ Created segment: {output_filename} ({file_size_mb:.2f} MB)")
             except subprocess.CalledProcessError as e:
                 logger.error(f"Error creating segment {i+1}: {e}")
-                raise
+                sys.exit(1)
 
         return segments
 
     def transcribe_audio(self, audio_file):
-        """Transcribe audio file using OpenAI API."""
+        """Transcribe audio file using OpenAI API with BytesIO approach."""
         try:
+            # Read audio file into BytesIO buffer
             with open(audio_file, 'rb') as f:
-                response = self.client.audio.transcriptions.create(
-                    model=self.model,
-                    file=f,
-                    response_format="text"
-                )
+                audio_data = f.read()
+
+            audio_buffer = io.BytesIO(audio_data)
+            audio_buffer.name = f"{Path(audio_file).name}"
+
+            # Convert to base64 for enhanced compatibility
+            audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+
+            # Create transcription request using BytesIO buffer
+            response = self.client.audio.transcriptions.create(
+                model=self.model,
+                file=audio_buffer,
+                response_format="text"
+            )
             return response
+
         except Exception as e:
             logger.error(f"Error transcribing {audio_file}: {e}")
-            raise
+            sys.exit(1)
 
     def save_transcription(self, transcription, segment_path, segments_dir):
         """Save transcription as markdown file in segments directory."""
@@ -170,13 +218,14 @@ class AudioTranscriber:
             return response.choices[0].message.content
         except Exception as e:
             logger.error(f"Error summarizing transcription: {e}")
-            raise
+            sys.exit(1)
 
     def process_file(self, input_file, output_dir="Output"):
         """Process audio/video file: split and transcribe."""
         input_path = Path(input_file)
         if not input_path.exists():
-            raise FileNotFoundError(f"Input file not found: {input_file}")
+            logger.error(f"Input file not found: {input_file}")
+            sys.exit(1)
 
         # Create subdirectory based on input filename
         file_subdir = input_path.name  # filename with extension
@@ -192,7 +241,8 @@ class AudioTranscriber:
         # Transcribe each segment
         transcription_files = []
         for i, segment_path in enumerate(segments, 1):
-            logger.info(f"Transcribing segment {i}/{len(segments)}: {segment_path.name}")
+            file_size_mb = segment_path.stat().st_size / (1024 * 1024)
+            logger.info(f"Transcribing segment {i}/{len(segments)}: {segment_path.name} ({file_size_mb:.2f} MB)")
 
             try:
                 transcription = self.transcribe_audio(segment_path)
@@ -200,7 +250,7 @@ class AudioTranscriber:
                 transcription_files.append(md_path)
             except Exception as e:
                 logger.error(f"Failed to transcribe segment {segment_path}: {e}")
-                continue
+                sys.exit(1)
 
         # Create combined transcription in output directory
         combined_md = output_path / f"{input_path.stem}_combined.md"
@@ -264,6 +314,7 @@ class AudioTranscriber:
 
             except Exception as e:
                 logger.error(f"Failed to create summary: {e}")
+                sys.exit(1)
 
         logger.info(f"Processing complete. Output files in: {output_path}")
 
