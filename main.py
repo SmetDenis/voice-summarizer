@@ -42,7 +42,7 @@ class AudioTranscriber:
         api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
         base_url = openai_base_url or os.getenv('OPENAI_BASE_URL')
         self.model = openai_model or os.getenv('OPENAI_WHISPER_MODEL', 'whisper-1')
-        self.summarization_model = summarization_model or os.getenv('OPENAI_SUMMARY_MODEL', 'gpt-4o-mini')
+        self.summarization_model = summarization_model or os.getenv('OPENAI_SUMMARY_MODEL', 'gpt-4o')
 
         client_kwargs = {'api_key': api_key}
         if base_url:
@@ -213,7 +213,7 @@ class AudioTranscriber:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": transcription_text}
                 ],
-                temperature=0.7
+                reasoning_effort="high"  # Enable deep reasoning for o1 models
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -241,6 +241,16 @@ class AudioTranscriber:
         # Transcribe each segment
         transcription_files = []
         for i, segment_path in enumerate(segments, 1):
+            # Check if transcription already exists
+            segment_name = segment_path.stem
+            md_filename = f"{segment_name}.md"
+            md_path = Path(segments_dir) / md_filename
+
+            if md_path.exists():
+                logger.info(f"✓ SKIPPING TRANSCRIPTION: Segment {i}/{len(segments)} already transcribed: {md_filename}")
+                transcription_files.append(md_path)
+                continue
+
             file_size_mb = segment_path.stat().st_size / (1024 * 1024)
             logger.info(f"Transcribing segment {i}/{len(segments)}: {segment_path.name} ({file_size_mb:.2f} MB)")
 
@@ -337,8 +347,9 @@ def main():
     parser.add_argument('--api-key', help='OpenAI API key (or set OPENAI_API_KEY env var)')
     parser.add_argument('--base-url', help='OpenAI base URL (or set OPENAI_BASE_URL env var)')
     parser.add_argument('--whisper-model', help='OpenAI Whisper model to use (or set OPENAI_WHISPER_MODEL env var, default: whisper-1)')
-    parser.add_argument('--summary-model', help='Model for summarization (or set OPENAI_SUMMARY_MODEL env var, default: gpt-4o-mini)')
-    parser.add_argument('--summarize', action='store_true', help='Create summary of transcription')
+    parser.add_argument('--summary-model', help='Model for summarization (or set OPENAI_SUMMARY_MODEL env var, default: gpt-4o)')
+    parser.add_argument('--no-summarize', action='store_true', help='Disable summary creation (default: summarization is enabled)')
+    parser.add_argument('--summarize', action='store_true', help='Create summary of transcription (default: enabled, use --no-summarize to disable)')
     parser.add_argument('--prompt-file', help='Path to summarization prompt file (or set PROMPT_FILE env var, default: summarization_prompt.md)')
 
     args = parser.parse_args()
@@ -354,8 +365,8 @@ def main():
     # Initialize transcriber
     try:
         transcriber = AudioTranscriber(args.api_key, args.base_url, args.whisper_model, args.summary_model)
-        # Set summarization options
-        transcriber.create_summary = args.summarize
+        # Set summarization options (enabled by default, disabled only with --no-summarize)
+        transcriber.create_summary = not args.no_summarize
         transcriber.prompt_file = args.prompt_file or os.getenv('PROMPT_FILE', 'summarization_prompt.md')
     except Exception as e:
         logger.error(f"Failed to initialize OpenAI client: {e}")
