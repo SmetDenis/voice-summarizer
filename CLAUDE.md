@@ -45,7 +45,7 @@ The application follows a single-class design centered around the `AudioTranscri
 
 ### Key Files
 - **`main.py`**: Complete application with AudioTranscriber class and CLI interface
-- **`summarization_prompt.md`**: Russian-language prompt template for AI summarization
+- **`summarization_prompt.md`**: English-language prompt template for AI summarization (generates structured meeting reports)
 - **`Dockerfile`** + **`docker-compose.yml`**: Container deployment configuration
 - **Directory structure**:
   - `input/` - Place audio/video files here
@@ -79,3 +79,27 @@ docker-compose run voice-summarizer-dev  # Development shell
 - **Error Handling**: Comprehensive error handling for missing dependencies, API failures, and file processing issues
 - **Security**: Path validation prevents directory traversal attacks
 - **Logging**: INFO level logging with timestamps for processing visibility
+- **Caching**: Existing transcription and audio segment files are reused to avoid reprocessing
+
+## Environment Configuration
+
+The application uses environment variables for configuration (see `.env.example`):
+
+```bash
+OPENAI_API_KEY=your-api-key-here         # Required: OpenAI API access
+OPENAI_BASE_URL=https://api.openai.com/v1 # Optional: Custom API endpoint
+OPENAI_WHISPER_MODEL=whisper-1           # Transcription model
+OPENAI_SUMMARY_MODEL=gpt-4o              # Summarization model
+PROMPT_FILE=summarization_prompt.md      # Custom prompt template
+```
+
+# important-instruction-reminders
+Do what has been asked; nothing more, nothing less.
+NEVER create files unless they're absolutely necessary for achieving your goal.
+ALWAYS prefer editing an existing file to creating a new one.
+NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
+
+## Documentation Maintenance Rules
+- **README Updates**: When making changes to README.md, ALWAYS update both the English README.md and Russian README.ru.md files simultaneously to keep them in sync.
+- **CLAUDE.md Updates**: When making significant changes to the project architecture, dependencies, commands, or core functionality, ALWAYS update this CLAUDE.md file to reflect these changes so future Claude instances have accurate information.
+- **Version Consistency**: Ensure all documentation reflects the current state of the project and its capabilities.
