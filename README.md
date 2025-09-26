@@ -163,19 +163,6 @@ docker-compose run voice-summarizer input/recording.mp4 \
 docker-compose run voice-summarizer-dev
 ```
 
-### Docker Version Advantages
-
-- ✅ **Environment isolation**: All dependencies packaged in container
-- ✅ **Easy installation**: No need to install Python and ffmpeg on host system
-- ✅ **Reproducibility**: Consistent behavior across any platform
-- ✅ **Security**: Process isolated from main system
-
-### Docker Requirements
-
-- Docker version 20.10 or higher
-- Docker Compose version 2.0 or higher
-- Minimum 2GB free space for the image
-
 ## Command Line Parameters
 
 | Parameter | Description |
@@ -229,20 +216,6 @@ To create your own summarization prompt:
 3. The prompt is used as a system message, transcription text is passed separately
 4. Specify the file path via the `--prompt-file` parameter or `PROMPT_FILE` environment variable
 
-## Troubleshooting
-
-### "ffmpeg not found" Error
-Make sure ffmpeg is installed and available in the system PATH.
-
-### API Authentication Error
-Check the correctness of the OpenAI API key in the `.env` file.
-
-### File Processing Errors
-Ensure that the input file exists and is readable.
-
-### API Limit Exceeded
-Check that you have sufficient funds in your OpenAI account.
-
 ## License
 
-The project is distributed without usage restrictions.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
