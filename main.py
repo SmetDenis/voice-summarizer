@@ -7,14 +7,14 @@ Saves transcriptions as markdown files organized by input filename.
 
 Usage:
     # Install dependencies
-    uv pip install -r requirements.txt
+    uv sync
 
     # Set up environment variables
     cp .env.example .env
     # Edit .env with your OpenAI API key
 
     # Run transcription
-    python transcribe_audio.py input/your-file.mp4
+    python main.py input/your-file.mp4
 """
 
 import os
@@ -22,21 +22,89 @@ import sys
 import argparse
 from pathlib import Path
 import subprocess
-import tempfile
 from openai import OpenAI
 import logging
 from dotenv import load_dotenv
 from datetime import datetime
 import io
-import base64
+import time
+try:
+    import boto3
+    from botocore.exceptions import ClientError, NoCredentialsError
+    BOTO3_AVAILABLE = True
+except ImportError:
+    BOTO3_AVAILABLE = False
+    boto3 = None
+    ClientError = Exception
+    NoCredentialsError = Exception
+
 
 # Load environment variables from .env file
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+class TimingFormatter(logging.Formatter):
+    """Custom formatter that shows elapsed time between log messages."""
+
+    def __init__(self):
+        super().__init__()
+        self.last_time = time.time()
+        self.first_log = True
+
+    def format(self, record):
+        current_time = time.time()
+
+        if self.first_log:
+            elapsed_str = "[START]"
+            self.first_log = False
+        else:
+            elapsed = current_time - self.last_time
+            if elapsed < 1.0:
+                elapsed_str = f"[+{elapsed*1000:.0f}ms]"
+            elif elapsed < 60.0:
+                elapsed_str = f"[+{elapsed:.1f}s]"
+            else:
+                minutes = int(elapsed // 60)
+                seconds = elapsed % 60
+                elapsed_str = f"[+{minutes}m{seconds:.1f}s]"
+
+        self.last_time = current_time
+
+        level_colors = {
+            'INFO': '\033[32m',    # Green
+            'WARNING': '\033[33m', # Yellow
+            'ERROR': '\033[31m',   # Red
+            'DEBUG': '\033[36m'    # Cyan
+        }
+
+        reset_color = '\033[0m'
+        level_color = level_colors.get(record.levelname, '')
+
+        return f"{level_color}{elapsed_str:>12}{reset_color} {record.getMessage()}"
+
+# Set up logging with custom formatter
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Remove existing handlers
+for handler in logger.handlers[:]:
+    logger.removeHandler(handler)
+
+# Add console handler with custom formatter
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(TimingFormatter())
+logger.addHandler(console_handler)
+
+# Prevent duplicate logs from root logger
+logger.propagate = False
 
 class AudioTranscriber:
+    """
+    Audio/Video transcription service using OpenAI Whisper API.
+
+    Supports both local files and S3 URLs. S3 support is optional and requires
+    AWS credentials in environment variables. Local file processing works
+    without any AWS configuration.
+    """
     def __init__(self, openai_api_key=None, openai_base_url=None, openai_model=None, summarization_model=None):
         """Initialize transcriber with OpenAI API key, base URL, and models."""
         api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
@@ -50,6 +118,117 @@ class AudioTranscriber:
 
         self.client = OpenAI(**client_kwargs)
         self.max_duration = 570  # 9.5 minutes in seconds
+
+        # Initialize S3 client if credentials are available
+        self.s3_client = None
+        self._init_s3_client()
+
+    def _init_s3_client(self):
+        """Initialize S3 client with AWS credentials from environment variables."""
+        if not BOTO3_AVAILABLE:
+            logger.debug("boto3 not available, S3 support disabled")
+            return
+
+        try:
+            aws_access_key_id = os.getenv('AWS_ACCESS_KEY_ID')
+            aws_secret_access_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+            aws_region = os.getenv('AWS_DEFAULT_REGION', 'us-east-1')
+            aws_endpoint_url = os.getenv('AWS_ENDPOINT_URL')
+
+            if aws_access_key_id and aws_secret_access_key:
+                session = boto3.Session(
+                    aws_access_key_id=aws_access_key_id,
+                    aws_secret_access_key=aws_secret_access_key,
+                    region_name=aws_region
+                )
+
+                s3_kwargs = {}
+                if aws_endpoint_url:
+                    s3_kwargs['endpoint_url'] = aws_endpoint_url
+
+                self.s3_client = session.client('s3', **s3_kwargs)
+                logger.info("S3 client initialized successfully")
+            else:
+                logger.debug("S3 credentials not found in environment variables")
+        except Exception as e:
+            logger.warning(f"Failed to initialize S3 client: {e}")
+
+    def _is_s3_url(self, url):
+        """Check if the URL is an S3 URL (s3://)."""
+        return url.startswith('s3://')
+
+    def _parse_s3_url(self, s3_url):
+        """Parse S3 URL to extract bucket name and key."""
+        if not s3_url.startswith('s3://'):
+            raise ValueError("Invalid S3 URL format. Expected s3://bucket/key")
+
+        # Remove s3:// prefix and split
+        path = s3_url[5:]  # Remove 's3://'
+        parts = path.split('/', 1)
+
+        if len(parts) != 2:
+            raise ValueError("Invalid S3 URL format. Expected s3://bucket/key")
+
+        bucket = parts[0]
+        key = parts[1]
+
+        return bucket, key
+
+    def download_from_s3(self, s3_url, input_dir="input"):
+        """Download file from S3 bucket to local input directory."""
+        if not self.s3_client:
+            logger.error("S3 client not initialized. This should not happen - check process_file method.")
+            sys.exit(1)
+
+        try:
+            bucket, key = self._parse_s3_url(s3_url)
+
+            # Create input directory if it doesn't exist
+            input_path = Path(input_dir)
+            input_path.mkdir(parents=True, exist_ok=True)
+
+            # Extract filename from S3 key
+            filename = Path(key).name
+            local_file_path = input_path / filename
+
+            # Check if file already exists locally
+            if local_file_path.exists():
+                logger.info(f"✓ File already exists locally: {local_file_path}")
+                return str(local_file_path)
+
+            logger.info(f"Downloading from S3: {s3_url}")
+            logger.info(f"Bucket: {bucket}, Key: {key}")
+            logger.info(f"Local destination: {local_file_path}")
+
+            # Download file from S3
+            self.s3_client.download_file(bucket, key, str(local_file_path))
+
+            # Verify file was downloaded and get its size
+            if local_file_path.exists():
+                file_size_mb = local_file_path.stat().st_size / (1024 * 1024)
+                logger.info(f"✓ Successfully downloaded: {filename} ({file_size_mb:.2f} MB)")
+                return str(local_file_path)
+            else:
+                logger.error(f"File download failed: {local_file_path}")
+                sys.exit(1)
+
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            if error_code == 'NoSuchBucket':
+                logger.error(f"S3 bucket does not exist: {bucket}")
+            elif error_code == 'NoSuchKey':
+                logger.error(f"S3 object does not exist: {key}")
+            elif error_code == 'AccessDenied':
+                logger.error(f"Access denied to S3 object: {s3_url}")
+            else:
+                logger.error(f"S3 error ({error_code}): {e}")
+            sys.exit(1)
+        except NoCredentialsError:
+            logger.error("AWS credentials not found. Please check AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables.")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Error downloading from S3: {e}")
+            sys.exit(1)
 
     def get_file_duration(self, file_path):
         """Get duration of audio/video file in seconds using ffprobe."""
@@ -69,13 +248,25 @@ class AudioTranscriber:
 
     def _validate_path(self, path):
         """Validate that path is safe and doesn't contain path traversal attempts."""
-        resolved_path = Path(path).resolve()
-        # Ensure the path is within current working directory or a subdirectory
-        try:
-            resolved_path.relative_to(Path.cwd())
-        except ValueError:
-            logger.error(f"Unsafe path detected: {path}")
+        # Convert to Path object and check for suspicious patterns
+        path_obj = Path(path)
+
+        # Check for obvious path traversal attempts
+        if '..' in path_obj.parts:
+            logger.error(f"Path traversal attempt detected: {path}")
             sys.exit(1)
+
+        # Resolve the path to handle symlinks and relative paths
+        resolved_path = path_obj.resolve()
+
+        # Ensure the resolved path is within current working directory or a subdirectory
+        cwd = Path.cwd().resolve()
+        try:
+            resolved_path.relative_to(cwd)
+        except ValueError:
+            logger.error(f"Unsafe path detected (outside working directory): {path}")
+            sys.exit(1)
+
         return resolved_path
 
     def split_audio(self, input_file, output_dir):
@@ -87,8 +278,16 @@ class AudioTranscriber:
         duration = self.get_file_duration(input_file)
         logger.info(f"File duration: {duration:.2f} seconds ({duration/60:.2f} minutes)")
 
+        # Check for empty or very short files
+        if duration <= 0:
+            logger.error(f"File has zero duration: {input_file}")
+            sys.exit(1)
+
+        if duration < 1.0:  # Less than 1 second
+            logger.warning(f"File is very short ({duration:.2f} seconds), proceeding anyway")
+
         segments = []
-        segment_count = int(duration // self.max_duration) + (1 if duration % self.max_duration > 0 else 1)
+        segment_count = int(duration // self.max_duration) + (1 if duration % self.max_duration > 0 else 0)
 
         # Check if segments already exist
         existing_segments = []
@@ -163,9 +362,6 @@ class AudioTranscriber:
             audio_buffer = io.BytesIO(audio_data)
             audio_buffer.name = f"{Path(audio_file).name}"
 
-            # Convert to base64 for enhanced compatibility
-            audio_base64 = base64.b64encode(audio_data).decode('utf-8')
-
             # Create transcription request using BytesIO buffer
             response = self.client.audio.transcriptions.create(
                 model=self.model,
@@ -212,16 +408,32 @@ class AudioTranscriber:
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": transcription_text}
-                ],
-                reasoning_effort="high"  # Enable deep reasoning for o1 models
+                ]
             )
             return response.choices[0].message.content
         except Exception as e:
             logger.error(f"Error summarizing transcription: {e}")
             sys.exit(1)
 
-    def process_file(self, input_file, output_dir="Output"):
+    def process_file(self, input_file, output_dir="output"):
         """Process audio/video file: split and transcribe."""
+        # Check if input is S3 URL and download if necessary
+        if self._is_s3_url(input_file):
+            logger.info(f"S3 URL detected: {input_file}")
+            if not BOTO3_AVAILABLE:
+                logger.error("S3 URL provided but boto3 library not available.")
+                logger.error("Please install boto3: uv add boto3")
+                sys.exit(1)
+            if not self.s3_client:
+                logger.error("S3 URL provided but S3 client not initialized.")
+                logger.error("Please configure AWS credentials in environment variables:")
+                logger.error("  AWS_ACCESS_KEY_ID=your-access-key")
+                logger.error("  AWS_SECRET_ACCESS_KEY=your-secret-key")
+                logger.error("  AWS_DEFAULT_REGION=your-region (optional)")
+                logger.error("  AWS_ENDPOINT_URL=your-endpoint (optional, for MinIO/custom S3)")
+                sys.exit(1)
+            input_file = self.download_from_s3(input_file)
+
         input_path = Path(input_file)
         if not input_path.exists():
             logger.error(f"Input file not found: {input_file}")
@@ -342,14 +554,13 @@ class AudioTranscriber:
 
 def main():
     parser = argparse.ArgumentParser(description='Voice Summarizer - Split and transcribe audio/video files using OpenAI')
-    parser.add_argument('input_file', help='Path to input audio/video file (mp3, mp4, etc.)')
-    parser.add_argument('-o', '--output', default='Output', help='Output directory (default: Output)')
+    parser.add_argument('input_file', help='Path to input audio/video file (mp3, mp4, etc.) or S3 URL (s3://bucket/key)')
+    parser.add_argument('-o', '--output', default='output', help='Output directory (default: output)')
     parser.add_argument('--api-key', help='OpenAI API key (or set OPENAI_API_KEY env var)')
     parser.add_argument('--base-url', help='OpenAI base URL (or set OPENAI_BASE_URL env var)')
     parser.add_argument('--whisper-model', help='OpenAI Whisper model to use (or set OPENAI_WHISPER_MODEL env var, default: whisper-1)')
     parser.add_argument('--summary-model', help='Model for summarization (or set OPENAI_SUMMARY_MODEL env var, default: gpt-4o)')
     parser.add_argument('--no-summarize', action='store_true', help='Disable summary creation (default: summarization is enabled)')
-    parser.add_argument('--summarize', action='store_true', help='Create summary of transcription (default: enabled, use --no-summarize to disable)')
     parser.add_argument('--prompt-file', help='Path to summarization prompt file (or set PROMPT_FILE env var, default: summarization_prompt.md)')
 
     args = parser.parse_args()
